@@ -54,6 +54,7 @@ export const useConversation = (
   const [transcripts, setTranscripts] = React.useState<Transcript[]>([]);
   const [active, setActive] = React.useState(true);
   const toggleActive = () => setActive(!active);
+  let nextPlayTime = 0;
 
   // get audio context and metadata about user audio
   React.useEffect(() => {
@@ -93,36 +94,6 @@ export const useConversation = (
     };
     registerWav().catch(console.error);
   }, []);
-
-  // play audio that is queued
-  React.useEffect(() => {
-    const playArrayBuffer = (arrayBuffer: ArrayBuffer) => {
-      audioContext &&
-        audioAnalyser &&
-        audioContext.decodeAudioData(arrayBuffer, (buffer) => {
-          const source = audioContext.createBufferSource();
-          source.buffer = buffer;
-          source.connect(audioContext.destination);
-          source.connect(audioAnalyser);
-          setCurrentSpeaker("agent");
-          source.start(0);
-          source.onended = () => {
-            if (audioQueue.length <= 0) {
-              setCurrentSpeaker("user");
-            }
-            setProcessing(false);
-          };
-        });
-    };
-    if (!processing && audioQueue.length > 0) {
-      setProcessing(true);
-      const audio = audioQueue.shift();
-      audio &&
-        fetch(URL.createObjectURL(new Blob([audio])))
-          .then((response) => response.arrayBuffer())
-          .then(playArrayBuffer);
-    }
-  }, [audioQueue, processing]);
 
   const stopConversation = (error?: Error) => {
     setAudioQueue([]);
@@ -229,7 +200,8 @@ export const useConversation = (
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "websocket_audio") {
-        setAudioQueue((prev) => [...prev, Buffer.from(message.data, "base64")]);
+        // setAudioQueue((prev) => [...prev, Buffer.from(message.data, "base64")]);
+        queueAudio(message.data);
       } else if (message.type === "websocket_ready") {
         setStatus("connected");
       } else if (message.type == "websocket_transcript") {
@@ -251,8 +223,51 @@ export const useConversation = (
           }
           return prev;
         });
+      } else if (message.type == "interrupt") {
+        console.log("Interrupted")
       }
     };
+
+    function queueAudio(base64Audio) {
+      const audioContext = new AudioContext();
+      const audioData = atob(base64Audio); // Decode base64 to binary string
+      const buffer = new Uint8Array(audioData.length);
+      
+      for (let i = 0; i < audioData.length; i++) {
+          buffer[i] = audioData.charCodeAt(i);
+      }
+      
+      audioContext.decodeAudioData(buffer.buffer, (decodedData) => {
+          scheduleAudioChunk(decodedData);
+      }, (error) => {
+          console.error('Error decoding audio data', error);
+      });
+    }
+
+    function scheduleAudioChunk(audioBuffer) {
+      if (!audioBuffer || !audioContext) return;
+  
+      const sourceNode = audioContext.createBufferSource();
+      sourceNode.buffer = audioBuffer;
+      sourceNode.connect(audioContext.destination);
+  
+      // If we're behind schedule, play immediately
+      if (nextPlayTime < audioContext.currentTime) {
+      nextPlayTime = audioContext.currentTime;
+      }
+  
+      // Schedule the chunk to play at the appropriate time
+      sourceNode.start(nextPlayTime);
+  
+      // Update the next play time by adding the current chunk's duration
+      nextPlayTime += audioBuffer.duration;
+  
+      // Optional: Clean up when the chunk finishes playing
+      sourceNode.onended = () => {
+      // Optionally handle the end of the chunk if needed
+      };
+    }
+
     socket.onclose = () => {
       stopConversation(error);
     };
