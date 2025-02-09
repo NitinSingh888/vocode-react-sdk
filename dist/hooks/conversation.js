@@ -18,7 +18,6 @@ const extendable_media_recorder_wav_encoder_1 = require("extendable-media-record
 const react_1 = __importDefault(require("react"));
 const utils_1 = require("../utils");
 const react_device_detect_1 = require("react-device-detect");
-const buffer_1 = require("buffer");
 const VOCODE_API_URL = "api.vocode.dev";
 const DEFAULT_CHUNK_SIZE = 2048;
 const useConversation = (config) => {
@@ -34,6 +33,7 @@ const useConversation = (config) => {
     const [transcripts, setTranscripts] = react_1.default.useState([]);
     const [active, setActive] = react_1.default.useState(true);
     const toggleActive = () => setActive(!active);
+    let nextPlayTime = 0;
     // get audio context and metadata about user audio
     react_1.default.useEffect(() => {
         const audioContext = new AudioContext();
@@ -71,35 +71,6 @@ const useConversation = (config) => {
         });
         registerWav().catch(console.error);
     }, []);
-    // play audio that is queued
-    react_1.default.useEffect(() => {
-        const playArrayBuffer = (arrayBuffer) => {
-            audioContext &&
-                audioAnalyser &&
-                audioContext.decodeAudioData(arrayBuffer, (buffer) => {
-                    const source = audioContext.createBufferSource();
-                    source.buffer = buffer;
-                    source.connect(audioContext.destination);
-                    source.connect(audioAnalyser);
-                    setCurrentSpeaker("agent");
-                    source.start(0);
-                    source.onended = () => {
-                        if (audioQueue.length <= 0) {
-                            setCurrentSpeaker("user");
-                        }
-                        setProcessing(false);
-                    };
-                });
-        };
-        if (!processing && audioQueue.length > 0) {
-            setProcessing(true);
-            const audio = audioQueue.shift();
-            audio &&
-                fetch(URL.createObjectURL(new Blob([audio])))
-                    .then((response) => response.arrayBuffer())
-                    .then(playArrayBuffer);
-        }
-    }, [audioQueue, processing]);
     const stopConversation = (error) => {
         setAudioQueue([]);
         setCurrentSpeaker("none");
@@ -181,7 +152,8 @@ const useConversation = (config) => {
         socket.onmessage = (event) => {
             const message = JSON.parse(event.data);
             if (message.type === "websocket_audio") {
-                setAudioQueue((prev) => [...prev, buffer_1.Buffer.from(message.data, "base64")]);
+                // setAudioQueue((prev) => [...prev, Buffer.from(message.data, "base64")]);
+                queueAudio(message.data);
             }
             else if (message.type === "websocket_ready") {
                 setStatus("connected");
@@ -207,7 +179,42 @@ const useConversation = (config) => {
                     return prev;
                 });
             }
+            else if (message.type == "interrupt") {
+                console.log("Interrupted");
+            }
         };
+        function queueAudio(base64Audio) {
+            const audioContext = new AudioContext();
+            const audioData = atob(base64Audio); // Decode base64 to binary string
+            const buffer = new Uint8Array(audioData.length);
+            for (let i = 0; i < audioData.length; i++) {
+                buffer[i] = audioData.charCodeAt(i);
+            }
+            audioContext.decodeAudioData(buffer.buffer, (decodedData) => {
+                scheduleAudioChunk(decodedData);
+            }, (error) => {
+                console.error('Error decoding audio data', error);
+            });
+        }
+        function scheduleAudioChunk(audioBuffer) {
+            if (!audioBuffer || !audioContext)
+                return;
+            const sourceNode = audioContext.createBufferSource();
+            sourceNode.buffer = audioBuffer;
+            sourceNode.connect(audioContext.destination);
+            // If we're behind schedule, play immediately
+            if (nextPlayTime < audioContext.currentTime) {
+                nextPlayTime = audioContext.currentTime;
+            }
+            // Schedule the chunk to play at the appropriate time
+            sourceNode.start(nextPlayTime);
+            // Update the next play time by adding the current chunk's duration
+            nextPlayTime += audioBuffer.duration;
+            // Optional: Clean up when the chunk finishes playing
+            sourceNode.onended = () => {
+                // Optionally handle the end of the chunk if needed
+            };
+        }
         socket.onclose = () => {
             stopConversation(error);
         };
