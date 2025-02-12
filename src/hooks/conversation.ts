@@ -23,9 +23,12 @@ import {
 import { DeepgramTranscriberConfig, TranscriberConfig } from "../types";
 import { isSafari, isChrome } from "react-device-detect";
 import { Buffer } from "buffer";
+import { EventEmitter } from 'events';
 
 const VOCODE_API_URL = "api.vocode.dev";
 const DEFAULT_CHUNK_SIZE = 2048;
+
+
 
 export const useConversation = (
   config: ConversationConfig | SelfHostedConversationConfig
@@ -40,6 +43,7 @@ export const useConversation = (
   analyserNode: AnalyserNode | undefined;
   transcripts: Transcript[];
   currentSpeaker: CurrentSpeaker;
+  messageEmitter: EventEmitter;
 } => {
   const [audioContext, setAudioContext] = React.useState<AudioContext>();
   const [audioAnalyser, setAudioAnalyser] = React.useState<AnalyserNode>();
@@ -53,6 +57,9 @@ export const useConversation = (
   const [error, setError] = React.useState<Error>();
   const [transcripts, setTranscripts] = React.useState<Transcript[]>([]);
   const [active, setActive] = React.useState(true);
+  const messageEmitter = new EventEmitter();
+
+  let audioNodes : AudioBufferSourceNode[] = [];
   const toggleActive = () => setActive(!active);
   let nextPlayTime = 0;
 
@@ -199,6 +206,7 @@ export const useConversation = (
     };
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
+      messageEmitter.emit("message", message);
       if (message.type === "websocket_audio") {
         // setAudioQueue((prev) => [...prev, Buffer.from(message.data, "base64")]);
         queueAudio(message.data);
@@ -224,9 +232,29 @@ export const useConversation = (
           return prev;
         });
       } else if (message.type == "interrupt") {
-        console.log("Interrupted")
+        console.log("Interrupted");
+        console.log(audioNodes.length);
+        stopAudio()
       }
     };
+
+    function stopAudio() {
+      if (!audioContext) return;
+      // Stop all scheduled audio nodes
+      audioNodes.forEach(node => {
+        try {
+          node.stop();  // Attempt to stop each node
+        } catch (e) {
+          console.error("Error stopping audio node:", e);
+        }
+      });
+    
+      // Clear the array of audio nodes
+      audioNodes = [];
+    
+      // Reset the nextPlayTime (if you want to reset scheduling)
+      nextPlayTime = audioContext.currentTime;
+    }
 
     function queueAudio(base64Audio) {
       const audioContext = new AudioContext();
@@ -258,6 +286,8 @@ export const useConversation = (
   
       // Schedule the chunk to play at the appropriate time
       sourceNode.start(nextPlayTime);
+
+      audioNodes.push(sourceNode);
   
       // Update the next play time by adding the current chunk's duration
       nextPlayTime += audioBuffer.duration;
@@ -399,5 +429,6 @@ export const useConversation = (
     analyserNode: audioAnalyser,
     transcripts,
     currentSpeaker,
+    messageEmitter,
   };
 };

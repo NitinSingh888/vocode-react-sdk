@@ -1,4 +1,5 @@
 import { ConversationConfig, ConversationStatus, CurrentSpeaker, SelfHostedConversationConfig, Transcript } from "../types/conversation";
+import { EventEmitter } from 'events';
 export declare const useConversation: (config: ConversationConfig | SelfHostedConversationConfig) => {
     status: ConversationStatus;
     start: () => void;
@@ -10,4 +11,5 @@ export declare const useConversation: (config: ConversationConfig | SelfHostedCo
     analyserNode: AnalyserNode | undefined;
     transcripts: Transcript[];
     currentSpeaker: CurrentSpeaker;
+    messageEmitter: EventEmitter;
 };
