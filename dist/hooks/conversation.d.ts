@@ -2,7 +2,7 @@ import { ConversationConfig, ConversationStatus, CurrentSpeaker, SelfHostedConve
 import { EventEmitter } from 'events';
 export declare const useConversation: (config: ConversationConfig | SelfHostedConversationConfig) => {
     status: ConversationStatus;
-    start: () => void;
+    start: (assistantId: string) => void;
     stop: () => void;
     error: Error | undefined;
     active: boolean;

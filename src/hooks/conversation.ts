@@ -34,7 +34,7 @@ export const useConversation = (
   config: ConversationConfig | SelfHostedConversationConfig
 ): {
   status: ConversationStatus;
-  start: () => void;
+  start: (assistantId: string) => void;
   stop: () => void;
   error: Error | undefined;
   active: boolean;
@@ -121,20 +121,24 @@ export const useConversation = (
   };
 
   const getBackendUrl = async () => {
-    if ("backendUrl" in config) {
+    if ("backendUrl" in config && config.backendUrl) {
       return config.backendUrl;
     } else if ("vocodeConfig" in config) {
       const baseUrl = config.vocodeConfig.baseUrl || VOCODE_API_URL;
       return `wss://${baseUrl}/conversation?key=${config.vocodeConfig.apiKey}`;
+    } else if ("scalerLexiConfig" in config) {
+      const baseUrl = config.scalerLexiConfig.baseUrl || '';
+      return `ws://${baseUrl}/conversations/conversation?key=${config.scalerLexiConfig.apiKey}`;
     } else {
-      throw new Error("Invalid config");
+      throw new Error("Backend URL is unknown");
     }
   };
 
   const getStartMessage = (
     config: ConversationConfig,
     inputAudioMetadata: { samplingRate: number; audioEncoding: AudioEncoding },
-    outputAudioMetadata: { samplingRate: number; audioEncoding: AudioEncoding }
+    outputAudioMetadata: { samplingRate: number; audioEncoding: AudioEncoding },
+    assistantId: string | undefined
   ): StartMessage => {
     let transcriberConfig: TranscriberConfig = Object.assign(
       config.transcriberConfig,
@@ -156,6 +160,7 @@ export const useConversation = (
         outputAudioMetadata
       ),
       conversationId: config.vocodeConfig.conversationId,
+      assistantId,
     };
   };
 
@@ -165,7 +170,8 @@ export const useConversation = (
     chunkSize: number | undefined,
     downsampling: number | undefined,
     conversationId: string | undefined,
-    subscribeTranscript: boolean | undefined
+    subscribeTranscript: boolean | undefined,
+    assistantId: string | undefined
   ): AudioConfigStartMessage => ({
     type: "websocket_audio_config_start",
     inputAudioConfig: {
@@ -180,9 +186,10 @@ export const useConversation = (
     },
     conversationId,
     subscribeTranscript,
+    assistantId,
   });
 
-  const startConversation = async () => {
+  const startConversation = async (assistantId: string) => {
     if (!audioContext || !audioAnalyser) return;
     setStatus("connecting");
 
@@ -196,6 +203,10 @@ export const useConversation = (
     }
 
     const backendUrl = await getBackendUrl();
+    
+    if (backendUrl === "unknown") {
+      throw new Error("Backend URL is unknown");
+    }
 
     setError(undefined);
     const socket = new WebSocket(backendUrl);
@@ -298,8 +309,23 @@ export const useConversation = (
       };
     }
 
-    socket.onclose = () => {
-      stopConversation(error);
+    socket.onclose = (event) => {
+      if (error) {
+        stopConversation(error);
+        return;
+      }
+
+      let err: Error | undefined;
+      if (event.code === 1000) {
+        console.log("Connection closed gracefully.");
+        setStatus("idle");
+      } else if (event.code === 4000) {
+        err = new Error(`Error: ${event.reason}`);
+      } else if (!error) {
+        err = new Error("Connection closed unexpectedly. Please try again.");
+      }
+      setError(err);
+      stopConversation(err);
     };
     setSocket(socket);
 
@@ -367,7 +393,8 @@ export const useConversation = (
       startMessage = getStartMessage(
         config as ConversationConfig,
         inputAudioMetadata,
-        outputAudioMetadata
+        outputAudioMetadata,
+        assistantId
       );
     } else {
       const selfHostedConversationConfig =
@@ -378,7 +405,8 @@ export const useConversation = (
         selfHostedConversationConfig.chunkSize,
         selfHostedConversationConfig.downsampling,
         selfHostedConversationConfig.conversationId,
-        selfHostedConversationConfig.subscribeTranscript
+        selfHostedConversationConfig.subscribeTranscript,
+        assistantId
       );
     }
 

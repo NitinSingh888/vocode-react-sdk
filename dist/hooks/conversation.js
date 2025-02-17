@@ -94,18 +94,22 @@ const useConversation = (config) => {
         socket.close();
     };
     const getBackendUrl = () => __awaiter(void 0, void 0, void 0, function* () {
-        if ("backendUrl" in config) {
+        if ("backendUrl" in config && config.backendUrl) {
             return config.backendUrl;
         }
         else if ("vocodeConfig" in config) {
             const baseUrl = config.vocodeConfig.baseUrl || VOCODE_API_URL;
             return `wss://${baseUrl}/conversation?key=${config.vocodeConfig.apiKey}`;
         }
+        else if ("scalerLexiConfig" in config) {
+            const baseUrl = config.scalerLexiConfig.baseUrl || '';
+            return `ws://${baseUrl}/conversations/conversation?key=${config.scalerLexiConfig.apiKey}`;
+        }
         else {
-            throw new Error("Invalid config");
+            throw new Error("Backend URL is unknown");
         }
     });
-    const getStartMessage = (config, inputAudioMetadata, outputAudioMetadata) => {
+    const getStartMessage = (config, inputAudioMetadata, outputAudioMetadata, assistantId) => {
         let transcriberConfig = Object.assign(config.transcriberConfig, inputAudioMetadata);
         if (react_device_detect_1.isSafari && transcriberConfig.type === "transcriber_deepgram") {
             transcriberConfig.downsampling = 2;
@@ -116,9 +120,10 @@ const useConversation = (config) => {
             agentConfig: config.agentConfig,
             synthesizerConfig: Object.assign(config.synthesizerConfig, outputAudioMetadata),
             conversationId: config.vocodeConfig.conversationId,
+            assistantId,
         };
     };
-    const getAudioConfigStartMessage = (inputAudioMetadata, outputAudioMetadata, chunkSize, downsampling, conversationId, subscribeTranscript) => ({
+    const getAudioConfigStartMessage = (inputAudioMetadata, outputAudioMetadata, chunkSize, downsampling, conversationId, subscribeTranscript, assistantId) => ({
         type: "websocket_audio_config_start",
         inputAudioConfig: {
             samplingRate: inputAudioMetadata.samplingRate,
@@ -132,8 +137,9 @@ const useConversation = (config) => {
         },
         conversationId,
         subscribeTranscript,
+        assistantId,
     });
-    const startConversation = () => __awaiter(void 0, void 0, void 0, function* () {
+    const startConversation = (assistantId) => __awaiter(void 0, void 0, void 0, function* () {
         if (!audioContext || !audioAnalyser)
             return;
         setStatus("connecting");
@@ -145,6 +151,9 @@ const useConversation = (config) => {
             audioContext.resume();
         }
         const backendUrl = yield getBackendUrl();
+        if (backendUrl === "unknown") {
+            throw new Error("Backend URL is unknown");
+        }
         setError(undefined);
         const socket = new WebSocket(backendUrl);
         let error;
@@ -239,8 +248,24 @@ const useConversation = (config) => {
                 // Optionally handle the end of the chunk if needed
             };
         }
-        socket.onclose = () => {
-            stopConversation(error);
+        socket.onclose = (event) => {
+            if (error) {
+                stopConversation(error);
+                return;
+            }
+            let err;
+            if (event.code === 1000) {
+                console.log("Connection closed gracefully.");
+                setStatus("idle");
+            }
+            else if (event.code === 4000) {
+                err = new Error(`Error: ${event.reason}`);
+            }
+            else if (!error) {
+                err = new Error("Connection closed unexpectedly. Please try again.");
+            }
+            setError(err);
+            stopConversation(err);
         };
         setSocket(socket);
         // wait for socket to be ready
@@ -294,11 +319,11 @@ const useConversation = (config) => {
             "synthesizerConfig",
             "vocodeConfig",
         ].every((key) => key in config)) {
-            startMessage = getStartMessage(config, inputAudioMetadata, outputAudioMetadata);
+            startMessage = getStartMessage(config, inputAudioMetadata, outputAudioMetadata, assistantId);
         }
         else {
             const selfHostedConversationConfig = config;
-            startMessage = getAudioConfigStartMessage(inputAudioMetadata, outputAudioMetadata, selfHostedConversationConfig.chunkSize, selfHostedConversationConfig.downsampling, selfHostedConversationConfig.conversationId, selfHostedConversationConfig.subscribeTranscript);
+            startMessage = getAudioConfigStartMessage(inputAudioMetadata, outputAudioMetadata, selfHostedConversationConfig.chunkSize, selfHostedConversationConfig.downsampling, selfHostedConversationConfig.conversationId, selfHostedConversationConfig.subscribeTranscript, assistantId);
         }
         socket.send((0, utils_1.stringify)(startMessage));
         console.log("Access to microphone granted");

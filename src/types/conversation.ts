@@ -19,6 +19,12 @@ export type VocodeConfig = {
   baseUrl?: string;
 };
 
+export type ScalerLexiConfig = {
+  apiKey: string;
+  conversationId?: string;
+  baseUrl?: string
+}
+
 export type ConversationConfig = {
   audioDeviceConfig: AudioDeviceConfig;
   transcriberConfig: Omit<TranscriberConfig, "samplingRate" | "audioEncoding">;
@@ -28,13 +34,14 @@ export type ConversationConfig = {
 };
 
 export type SelfHostedConversationConfig = {
-  backendUrl: string;
+  backendUrl?: string;
   audioDeviceConfig: AudioDeviceConfig;
   conversationId?: string;
   timeSlice?: number;
   chunkSize?: number;
   downsampling?: number;
   subscribeTranscript?: boolean;
+  scalerLexiConfig: ScalerLexiConfig;
 };
 
 export type AudioMetadata = {
