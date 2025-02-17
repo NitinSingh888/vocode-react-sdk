@@ -103,7 +103,7 @@ const useConversation = (config) => {
         }
         else if ("scalerLexiConfig" in config) {
             const baseUrl = config.scalerLexiConfig.baseUrl || '';
-            return `ws://${baseUrl}/conversations/conversation?key=${config.scalerLexiConfig.apiKey}`;
+            return `wss://${baseUrl}/conversations/conversation?key=${config.scalerLexiConfig.apiKey}`;
         }
         else {
             throw new Error("Backend URL is unknown");
