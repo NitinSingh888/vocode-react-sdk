@@ -193,8 +193,6 @@ const useConversation = (config) => {
                 });
             }
             else if (message.type == "interrupt") {
-                console.log("Interrupted");
-                console.log(audioNodes.length);
                 stopAudio();
             }
         };
@@ -261,11 +259,10 @@ const useConversation = (config) => {
             else if (event.code === 4000) {
                 err = new Error(`Error: ${event.reason}`);
             }
-            else if (!error) {
-                err = new Error("Connection closed unexpectedly. Please try again.");
+            if (err) {
+                setError(err);
+                stopConversation(err);
             }
-            setError(err);
-            stopConversation(err);
         };
         setSocket(socket);
         // wait for socket to be ready

@@ -243,8 +243,6 @@ export const useConversation = (
           return prev;
         });
       } else if (message.type == "interrupt") {
-        console.log("Interrupted");
-        console.log(audioNodes.length);
         stopAudio()
       }
     };
@@ -321,11 +319,12 @@ export const useConversation = (
         setStatus("idle");
       } else if (event.code === 4000) {
         err = new Error(`Error: ${event.reason}`);
-      } else if (!error) {
-        err = new Error("Connection closed unexpectedly. Please try again.");
       }
-      setError(err);
-      stopConversation(err);
+
+      if (err) {
+        setError(err);
+        stopConversation(err);
+      }
     };
     setSocket(socket);
 
