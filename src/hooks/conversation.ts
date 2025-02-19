@@ -212,6 +212,7 @@ export const useConversation = (
     const socket = new WebSocket(backendUrl);
     let error: Error | undefined;
     socket.onerror = (event) => {
+      messageEmitter.emit("onclose");
       console.error(event);
       error = new Error("See console for error details");
     };
@@ -308,6 +309,7 @@ export const useConversation = (
     }
 
     socket.onclose = (event) => {
+      messageEmitter.emit("onclose");
       if (error) {
         stopConversation(error);
         return;

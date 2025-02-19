@@ -158,6 +158,7 @@ const useConversation = (config) => {
         const socket = new WebSocket(backendUrl);
         let error;
         socket.onerror = (event) => {
+            messageEmitter.emit("onclose");
             console.error(event);
             error = new Error("See console for error details");
         };
@@ -247,6 +248,7 @@ const useConversation = (config) => {
             };
         }
         socket.onclose = (event) => {
+            messageEmitter.emit("onclose");
             if (error) {
                 stopConversation(error);
                 return;
