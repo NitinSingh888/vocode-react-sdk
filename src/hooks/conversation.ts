@@ -5,6 +5,7 @@ import {
 } from "extendable-media-recorder";
 import { connect } from "extendable-media-recorder-wav-encoder";
 import React from "react";
+import { io, Socket } from "socket.io-client";
 import {
   ConversationConfig,
   ConversationStatus,
@@ -25,10 +26,7 @@ import { isSafari, isChrome } from "react-device-detect";
 import { Buffer } from "buffer";
 import { EventEmitter } from 'events';
 
-const VOCODE_API_URL = "api.vocode.dev";
 const DEFAULT_CHUNK_SIZE = 2048;
-
-
 
 export const useConversation = (
   config: ConversationConfig | SelfHostedConversationConfig
@@ -52,14 +50,14 @@ export const useConversation = (
     React.useState<CurrentSpeaker>("none");
   const [processing, setProcessing] = React.useState(false);
   const [recorder, setRecorder] = React.useState<IMediaRecorder>();
-  const [socket, setSocket] = React.useState<WebSocket>();
+  const [socket, setSocket] = React.useState<Socket>();
   const [status, setStatus] = React.useState<ConversationStatus>("idle");
   const [error, setError] = React.useState<Error>();
   const [transcripts, setTranscripts] = React.useState<Transcript[]>([]);
   const [active, setActive] = React.useState(true);
   const messageEmitter = new EventEmitter();
 
-  let audioNodes : AudioBufferSourceNode[] = [];
+  let audioNodes: AudioBufferSourceNode[] = [];
   const toggleActive = () => setActive(!active);
   let nextPlayTime = 0;
 
@@ -73,16 +71,15 @@ export const useConversation = (
 
   const recordingDataListener = ({ data }: { data: Blob }) => {
     blobToBase64(data).then((base64Encoded: string | null) => {
-      if (!base64Encoded) return;
+      if (!base64Encoded || !socket) return;
       const audioMessage: AudioMessage = {
         type: "websocket_audio",
         data: base64Encoded,
       };
-      socket?.readyState === WebSocket.OPEN &&
-        socket.send(stringify(audioMessage));
+      socket.emit("conversation", audioMessage);
     });
   };
-  
+
   // once the conversation is connected, stream the microphone audio into the socket
   React.useEffect(() => {
     if (!recorder || !socket) return;
@@ -116,22 +113,8 @@ export const useConversation = (
     const stopMessage: StopMessage = {
       type: "websocket_stop",
     };
-    socket.send(stringify(stopMessage));
-    socket.close();
-  };
-
-  const getBackendUrl = async () => {
-    if ("backendUrl" in config && config.backendUrl) {
-      return config.backendUrl;
-    } else if ("vocodeConfig" in config) {
-      const baseUrl = config.vocodeConfig.baseUrl || VOCODE_API_URL;
-      return `wss://${baseUrl}/conversation?key=${config.vocodeConfig.apiKey}`;
-    } else if ("scalerLexiConfig" in config) {
-      const baseUrl = config.scalerLexiConfig.baseUrl || '';
-      return `wss://${baseUrl}/conversations/conversation?key=${config.scalerLexiConfig.apiKey}`;
-    } else {
-      throw new Error("Backend URL is unknown");
-    }
+    socket.emit("conversation", stopMessage);
+    socket.disconnect();
   };
 
   const getStartMessage = (
@@ -189,6 +172,58 @@ export const useConversation = (
     assistantId,
   });
 
+  function stopAudio() {
+    if (!audioContext) return;
+    audioNodes.forEach(node => {
+      try {
+        node.stop();
+      } catch (e) {
+        console.error("Error stopping audio node:", e);
+      }
+    });
+    audioNodes = [];
+    nextPlayTime = audioContext.currentTime;
+  }
+
+  function queueAudio(base64Audio: string) {
+    if (!audioContext) return;
+    const audioData = atob(base64Audio);
+    const buffer = new Uint8Array(audioData.length);
+    
+    for (let i = 0; i < audioData.length; i++) {
+      buffer[i] = audioData.charCodeAt(i);
+    }
+    
+    audioContext.decodeAudioData(buffer.buffer, (decodedData) => {
+      scheduleAudioChunk(decodedData);
+    }, (error) => {
+      console.error('Error decoding audio data', error);
+    });
+  }
+
+  function scheduleAudioChunk(audioBuffer: AudioBuffer) {
+    if (!audioBuffer || !audioContext) return;
+
+    const sourceNode = audioContext.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    sourceNode.connect(audioContext.destination);
+
+    if (nextPlayTime < audioContext.currentTime) {
+      nextPlayTime = audioContext.currentTime;
+    }
+
+    sourceNode.start(nextPlayTime);
+    audioNodes.push(sourceNode);
+    nextPlayTime += audioBuffer.duration;
+
+    sourceNode.onended = () => {
+      const index = audioNodes.indexOf(sourceNode);
+      if (index > -1) {
+        audioNodes.splice(index, 1);
+      }
+    };
+  }
+
   const startConversation = async (assistantId: string) => {
     if (!audioContext || !audioAnalyser) return;
     setStatus("connecting");
@@ -202,143 +237,106 @@ export const useConversation = (
       audioContext.resume();
     }
 
-    const backendUrl = await getBackendUrl();
+    setError(undefined);
     
-    if (backendUrl === "unknown") {
-      throw new Error("Backend URL is unknown");
+    // Initialize Socket.IO
+    let scalerLexiBaseURL = "http://localhost:8000";
+    let scalerLexiAPIKey = ""
+    if ("scalerLexiConfig" in config){
+      scalerLexiBaseURL = config.scalerLexiConfig?.baseUrl || '';
+      scalerLexiAPIKey = config.scalerLexiConfig.apiKey;
     }
 
-    setError(undefined);
-    const socket = new WebSocket(backendUrl);
-    let error: Error | undefined;
-    socket.onerror = (event) => {
+    const socket = io(scalerLexiBaseURL, {
+      path: '/socket.io/',
+      transports: ['websocket'],
+      auth: {
+        token: scalerLexiAPIKey,
+        service: "lexi-conversation",
+    }
+    });
+
+    socket.on("error", (err) => {
       messageEmitter.emit("onclose");
-      console.error(event);
-      error = new Error("See console for error details");
-    };
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      messageEmitter.emit("message", message);
-      if (message.type === "websocket_audio") {
-        // setAudioQueue((prev) => [...prev, Buffer.from(message.data, "base64")]);
+      console.error(err);
+      stopConversation(new Error("Connection error"));
+    });
+    socket.on("audio", (message) => {
         queueAudio(message.data);
-      } else if (message.type === "websocket_ready") {
-        setStatus("connected");
-      } else if (message.type == "websocket_transcript") {
-        setTranscripts((prev) => {
+    });
+
+    socket.on("transcript", (transcript) => {
+      console.log("transcript");
+      console.log("hello");
+      messageEmitter.emit("message", transcript);
+      // console.error(transcript.data);
+      // console.error("transcript");
+      setTranscripts((prev) => {
           let last = prev.pop();
-          if (last && last.sender === message.sender) {
-            prev.push({
-              sender: message.sender,
-              text: last.text + " " + message.text,
-            });
-          } else {
-            if (last) {
-              prev.push(last);
-            }
-            prev.push({
-              sender: message.sender,
-              text: message.text,
-            });
+          if (last && last.sender === transcript.sender) {
+              prev.push({
+                  sender: transcript.sender,
+                  text: last.text + " " + transcript.text,
+              });
+          }
+          else {
+              if (last) {
+                  prev.push(last);
+              }
+              prev.push({
+                  sender: transcript.sender,
+                  text: transcript.text,
+              });
           }
           return prev;
-        });
-      } else if (message.type == "interrupt") {
-        stopAudio()
-      }
-    };
-
-    function stopAudio() {
-      if (!audioContext) return;
-      // Stop all scheduled audio nodes
-      audioNodes.forEach(node => {
-        try {
-          node.stop();  // Attempt to stop each node
-        } catch (e) {
-          console.error("Error stopping audio node:", e);
-        }
       });
-    
-      // Clear the array of audio nodes
-      audioNodes = [];
-    
-      // Reset the nextPlayTime (if you want to reset scheduling)
-      nextPlayTime = audioContext.currentTime;
-    }
-
-    function queueAudio(base64Audio) {
-      const audioContext = new AudioContext();
-      const audioData = atob(base64Audio); // Decode base64 to binary string
-      const buffer = new Uint8Array(audioData.length);
-      
-      for (let i = 0; i < audioData.length; i++) {
-          buffer[i] = audioData.charCodeAt(i);
+    });
+    socket.on("conversation", (message) => {
+      message = JSON.parse(message);
+      console.log("message2");
+      console.log(message);
+      // messageEmitter.emit("message", message);
+      if (message.type === "websocket_audio") {
+          queueAudio(message.data);
       }
-      
-      audioContext.decodeAudioData(buffer.buffer, (decodedData) => {
-          scheduleAudioChunk(decodedData);
-      }, (error) => {
-          console.error('Error decoding audio data', error);
-      });
-    }
-
-    function scheduleAudioChunk(audioBuffer) {
-      if (!audioBuffer || !audioContext) return;
-  
-      const sourceNode = audioContext.createBufferSource();
-      sourceNode.buffer = audioBuffer;
-      sourceNode.connect(audioContext.destination);
-  
-      // If we're behind schedule, play immediately
-      if (nextPlayTime < audioContext.currentTime) {
-      nextPlayTime = audioContext.currentTime;
+      else if (message.type === "websocket_ready") {
+          setStatus("connected");
       }
-  
-      // Schedule the chunk to play at the appropriate time
-      sourceNode.start(nextPlayTime);
-
-      audioNodes.push(sourceNode);
-  
-      // Update the next play time by adding the current chunk's duration
-      nextPlayTime += audioBuffer.duration;
-  
-      // Optional: Clean up when the chunk finishes playing
-      sourceNode.onended = () => {
-      // Optionally handle the end of the chunk if needed
-      };
-    }
-
-    socket.onclose = (event) => {
+      else if (message.type === "websocket_transcript") {
+          setTranscripts((prev) => {
+              let last = prev.pop();
+              if (last && last.sender === message.sender) {
+                  prev.push({
+                      sender: message.sender,
+                      text: last.text + " " + message.text,
+                  });
+              }
+              else {
+                  if (last) {
+                      prev.push(last);
+                  }
+                  prev.push({
+                      sender: message.sender,
+                      text: message.text,
+                  });
+              }
+              return prev;
+          });
+      }
+      else if (message.type === "interrupt") {
+          stopAudio();
+      }
+    });
+    socket.on("disconnect", () => {
       messageEmitter.emit("onclose");
       if (error) {
-        stopConversation(error);
-        return;
+          stopConversation(error);
+          return;
       }
-
-      let err: Error | undefined;
-      if (event.code === 1000) {
-        console.log("Connection closed gracefully.");
-        setStatus("idle");
-      } else if (event.code === 4000) {
-        err = new Error(`Error: ${event.reason}`);
-      }
-
-      if (err) {
-        setError(err);
-        stopConversation(err);
-      }
-    };
-    setSocket(socket);
-
-    // wait for socket to be ready
-    await new Promise((resolve) => {
-      const interval = setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN) {
-          clearInterval(interval);
-          resolve(null);
-        }
-      }, 100);
+      setStatus("idle");
     });
+
+    setSocket(socket);
 
     let audioStream;
     try {
@@ -367,6 +365,7 @@ export const useConversation = (
       stopConversation(error as Error);
       return;
     }
+
     const micSettings = audioStream.getAudioTracks()[0].getSettings();
     console.log(micSettings);
     const inputAudioMetadata = {
@@ -411,7 +410,7 @@ export const useConversation = (
       );
     }
 
-    socket.send(stringify(startMessage));
+    socket.emit("conversation", JSON.parse(stringify(startMessage)));
     console.log("Access to microphone granted");
     console.log(startMessage);
 
@@ -438,10 +437,6 @@ export const useConversation = (
     }
 
     if (recorderToUse.state === "recording") {
-      // When the recorder is in the recording state, see:
-      // https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/state
-      // which is not expected to call `start()` according to:
-      // https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/start.
       return;
     }
     recorderToUse.start(timeSlice);
