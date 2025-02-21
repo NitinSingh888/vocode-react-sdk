@@ -202,6 +202,9 @@ const useConversation = (config) => {
             console.error(err);
             stopConversation(new Error("Connection error"));
         });
+        socket.on("interrupt", (data) => {
+            stopAudio();
+        });
         socket.on("audio", (message) => {
             queueAudio(message.data);
         });
